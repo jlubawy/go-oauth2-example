@@ -41,8 +41,8 @@ var oauthConfig = &oauth2.Config{
 	ClientSecret: ConfigClientSecret,
 	Scopes:       []string{"SCOPE1", "SCOPE2"},
 	Endpoint: oauth2.Endpoint{
-		AuthURL:  "http://localhost:8080/oauth2/authorize",
-		TokenURL: "http://localhost:8080/oauth2/token",
+		AuthURL:  "http://localhost:8080/resource/oauth2/authorize",
+		TokenURL: "http://localhost:8080/resource/oauth2/token",
 	},
 }
 
@@ -56,14 +56,16 @@ func init() {
 
 func main() {
 	// Authorization server handlers
-	http.Handle("/oauth2/authorize", handle(OAuthAuthorizeHandler))
-	http.Handle("/oauth2/token", handle(OAuthTokenHandler))
+	http.Handle("/resource/logout", handle(ResourceLogoutHandler))
+	http.Handle("/resource/oauth2/authorize", handle(ResourceOAuthAuthorizeHandler))
+	http.Handle("/resource/oauth2/authorize/approve", handle(ResourceOAuthAuthorizeApproveHandler))
+	http.Handle("/resource/oauth2/token", handle(OAuthTokenHandler))
 
 	// Resource server handlers
 	http.Handle("/resource/secret", handle(ResouceSecretHandler))
 
 	// Client server handlers
-	http.Handle("/", http.RedirectHandler("/client/secret", http.StatusFound))
+	http.Handle("/", handle(ClientIndexHandler))
 	http.Handle("/client/callback", handle(ClientCallbackHandler))
 	http.Handle("/client/logout", handle(ClientLogoutHandler))
 	http.Handle("/client/secret", handle(ClientSecretHandler))
@@ -109,7 +111,25 @@ var (
 	ErrUsernameEmpty             = Error{http.StatusBadRequest, "username cannot be empty"}
 )
 
-func OAuthAuthorizeHandler(w http.ResponseWriter, req *http.Request) error {
+func ResourceLogoutHandler(w http.ResponseWriter, req *http.Request) error {
+	session, _ := store.Get(req, SessionName)
+	session.Values["username"] = nil
+	session.Save(req, w)
+
+	if redirectURI := req.FormValue("redirect_uri"); redirectURI != "" {
+		http.Redirect(w, req, redirectURI, http.StatusFound)
+		return nil
+	}
+
+	return nil
+}
+
+func ResourceOAuthAuthorizeHandler(w http.ResponseWriter, req *http.Request) error {
+	var (
+		username string
+		password string
+	)
+
 	session, _ := store.Get(req, SessionName)
 
 	switch req.Method {
@@ -119,13 +139,19 @@ func OAuthAuthorizeHandler(w http.ResponseWriter, req *http.Request) error {
 			session.Save(req, w)
 		}
 
-		return oauthAuthorizeTempl.Execute(w, nil)
+		var data = struct {
+			Username    interface{}
+			RedirectURI string
+		}{
+			Username:    session.Values["username"],
+			RedirectURI: req.RequestURI,
+		}
+
+		return oauthAuthorizeTempl.Execute(w, &data)
 
 	case http.MethodPost:
-		var (
-			username = req.FormValue("username")
-			password = req.FormValue("password")
-		)
+		username = req.FormValue("username")
+		password = req.FormValue("password")
 
 		if username == "" {
 			return ErrUsernameEmpty
@@ -140,27 +166,11 @@ func OAuthAuthorizeHandler(w http.ResponseWriter, req *http.Request) error {
 		}
 
 		if checkPassword == password {
-			// Authenticated
+			// Authenticated, store username so we are authenticated next time
+			session.Values["username"] = username
+			session.Save(req, w)
 
-			v, ok := session.Values["redirect_uri"]
-			if !ok {
-				return ErrInvalidRedirectURI
-			}
-
-			redirectURI, ok := v.(string)
-			if !ok {
-				return ErrInvalidRedirectURI
-			}
-			redirectURL, err := url.Parse(redirectURI)
-			if err != nil {
-				return err
-			}
-
-			values := redirectURL.Query()
-			values.Set("code", ConfigAuthorizeCode)
-			redirectURL.RawQuery = values.Encode()
-			http.Redirect(w, req, redirectURL.String(), http.StatusFound)
-			return nil
+			return OAuthCodeRedirect(session, w, req)
 		}
 
 		return ErrInvalidUsernameOrPassword
@@ -182,6 +192,16 @@ var oauthAuthorizeTempl = template.Must(template.New("").Parse(`<!DOCTYPE html>
   <body class="container-fluid">
     <div class="row">
       <div class="col-xs-4 col-xs-offset-4">
+{{with .Username}}
+        Approve access for: {{.}}
+        <form method="POST" action="/resource/oauth2/authorize/approve">
+          <button type="submit" class="btn btn-default">Approve</button>
+        </form>
+        <form method="GET" action="/resource/logout">
+          <input type="hidden" name="redirect_uri" value="{{$.RedirectURI}}" />
+          <button type="submit" class="btn btn-default">Logout</button>
+        </form>
+{{else}}
         <form method="POST">
           <div class="form-group">
             <label for="inputUsername">Username</label>
@@ -193,11 +213,42 @@ var oauthAuthorizeTempl = template.Must(template.New("").Parse(`<!DOCTYPE html>
           </div>
           <button type="submit" class="btn btn-default">Submit</button>
         </form>
+{{end}}
       </div>
     </div>
   </body>
 </html>
 `))
+
+func ResourceOAuthAuthorizeApproveHandler(w http.ResponseWriter, req *http.Request) error {
+	session, _ := store.Get(req, SessionName)
+	if session.Values["username"] != nil {
+		return OAuthCodeRedirect(session, w, req)
+	}
+	return nil
+}
+
+func OAuthCodeRedirect(session *sessions.Session, w http.ResponseWriter, req *http.Request) error {
+	v, ok := session.Values["redirect_uri"]
+	if !ok {
+		return ErrInvalidRedirectURI
+	}
+
+	redirectURI, ok := v.(string)
+	if !ok {
+		return ErrInvalidRedirectURI
+	}
+	redirectURL, err := url.Parse(redirectURI)
+	if err != nil {
+		return err
+	}
+
+	values := redirectURL.Query()
+	values.Set("code", ConfigAuthorizeCode)
+	redirectURL.RawQuery = values.Encode()
+	http.Redirect(w, req, redirectURL.String(), http.StatusFound)
+	return nil
+}
 
 var (
 	ErrUnauthorized = Error{Code: http.StatusUnauthorized}
@@ -244,6 +295,27 @@ var (
 	ErrEmptyAuthCode      = Error{http.StatusBadRequest, "authorization code cannot be empty"}
 	ErrInvalidResourceURI = Error{http.StatusBadRequest, "resource URI is invalid"}
 )
+
+func ClientIndexHandler(w http.ResponseWriter, req *http.Request) error {
+	return clientIndexTempl.Execute(w, nil)
+}
+
+var clientIndexTempl = template.Must(template.New("").Parse(`<!DOCTYPE html>
+<html>
+  <head>
+    <title>Client Home</title>
+
+    <link href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.7/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-BVYiiSIFeK1dGmJRAkycuHAHRg32OmUcww7on3RYdg4Va+PmSTsz/K68vbdEjh4u" crossorigin="anonymous">
+  </head>
+  <body class="container-fluid">
+    <div class="row">
+      <div class="col-xs-4 col-xs-offset-4">
+        <p>Access the <a href="/client/secret">secret</a>.</p>
+      </div>
+    </div>
+  </body>
+</html>
+`))
 
 func ClientCallbackHandler(w http.ResponseWriter, req *http.Request) error {
 	code := req.FormValue("code")
@@ -333,7 +405,7 @@ func ClientSecretHandler(w http.ResponseWriter, req *http.Request) error {
 		oauth2.SetAuthURLParam("redirect_uri", "/client/callback"),
 	}
 
-	// unauthenticated
+	// Redirect to /resource/oauth2/authorize
 	http.Redirect(w, req, oauthConfig.AuthCodeURL(ConfigAuthorizeState, authCodeOptions...), http.StatusFound)
 	return nil
 }
@@ -351,7 +423,7 @@ var clientSecretTempl = template.Must(template.New("").Parse(`<!DOCTYPE html>
         {{.Secret}}
         <form method="GET" action="/client/logout">
           <input type="hidden" name="redirect_uri" value="{{.RedirectURI}}" />
-          <button type="submit">Logout</button>
+          <button type="submit" class="btn btn-default">Logout</button>
         </form>
       </div>
     </div>
