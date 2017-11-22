@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/davecgh/go-spew/spew"
 	"github.com/gorilla/sessions"
 
 	"golang.org/x/net/context"
@@ -105,6 +106,7 @@ func (e Error) Error() string {
 var (
 	ErrClientIDOrSecret          = Error{http.StatusBadRequest, "invalid client ID or secret"}
 	ErrInvalidAuthCode           = Error{http.StatusBadRequest, "invalid authorization code"}
+	ErrInvalidOAuthResponseType  = Error{http.StatusBadRequest, "invalid OAuth response type"}
 	ErrInvalidRedirectURI        = Error{http.StatusBadRequest, "redirect URI is invalid"}
 	ErrInvalidUsernameOrPassword = Error{http.StatusBadRequest, "invalid username or password"}
 	ErrPasswordEmpty             = Error{http.StatusBadRequest, "password cannot be empty"}
@@ -125,61 +127,67 @@ func ResourceLogoutHandler(w http.ResponseWriter, req *http.Request) error {
 }
 
 func ResourceOAuthAuthorizeHandler(w http.ResponseWriter, req *http.Request) error {
-	var (
-		username string
-		password string
-	)
+	switch req.FormValue("response_type") {
+	case "code":
+		var (
+			username string
+			password string
+		)
 
-	session, _ := store.Get(req, SessionName)
+		session, _ := store.Get(req, SessionName)
 
-	switch req.Method {
-	case http.MethodGet:
-		if redirectURI := req.FormValue("redirect_uri"); redirectURI != "" {
-			session.Values["redirect_uri"] = redirectURI
-			session.Save(req, w)
-		}
+		switch req.Method {
+		case http.MethodGet:
+			if redirectURI := req.FormValue("redirect_uri"); redirectURI != "" {
+				session.Values["redirect_uri"] = redirectURI
+				session.Save(req, w)
+			}
 
-		var data = struct {
-			Username    interface{}
-			RedirectURI string
-		}{
-			Username:    session.Values["username"],
-			RedirectURI: req.RequestURI,
-		}
+			var data = struct {
+				Username    interface{}
+				RedirectURI string
+			}{
+				Username:    session.Values["username"],
+				RedirectURI: req.RequestURI,
+			}
 
-		return oauthAuthorizeTempl.Execute(w, &data)
+			return oauthAuthorizeTempl.Execute(w, &data)
 
-	case http.MethodPost:
-		username = req.FormValue("username")
-		password = req.FormValue("password")
+		case http.MethodPost:
+			username = req.FormValue("username")
+			password = req.FormValue("password")
 
-		if username == "" {
-			return ErrUsernameEmpty
-		}
-		if password == "" {
-			return ErrPasswordEmpty
-		}
+			if username == "" {
+				return ErrUsernameEmpty
+			}
+			if password == "" {
+				return ErrPasswordEmpty
+			}
 
-		checkPassword, ok := UserDatabase[username]
-		if !ok {
+			checkPassword, ok := UserDatabase[username]
+			if !ok {
+				return ErrInvalidUsernameOrPassword
+			}
+
+			if checkPassword == password {
+				// Authenticated, store username so we are authenticated next time
+				session.Values["username"] = username
+				session.Save(req, w)
+
+				return OAuthCodeRedirect(session, w, req)
+			}
+
 			return ErrInvalidUsernameOrPassword
+
+		default:
+			http.Error(w, fmt.Sprintf("method %s is not allowed", req.Method), http.StatusMethodNotAllowed)
 		}
 
-		if checkPassword == password {
-			// Authenticated, store username so we are authenticated next time
-			session.Values["username"] = username
-			session.Save(req, w)
-
-			return OAuthCodeRedirect(session, w, req)
-		}
-
-		return ErrInvalidUsernameOrPassword
+		return nil
 
 	default:
-		http.Error(w, fmt.Sprintf("method %s is not allowed", req.Method), http.StatusMethodNotAllowed)
+		return ErrInvalidOAuthResponseType
 	}
-
-	return nil
 }
 
 var oauthAuthorizeTempl = template.Must(template.New("").Parse(`<!DOCTYPE html>
@@ -430,3 +438,7 @@ var clientSecretTempl = template.Must(template.New("").Parse(`<!DOCTYPE html>
   </body>
 </html>
 `))
+
+func dump(v interface{}) {
+	spew.Dump(v)
+}
