@@ -16,20 +16,13 @@ import (
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/gorilla/sessions"
+	"github.com/jlubawy/go-oauth2-example/config"
 
 	"golang.org/x/net/context"
 	"golang.org/x/oauth2"
 )
 
 const (
-	ConfigClientID     = "go-oauth2-example"
-	ConfigClientSecret = "some-random-secret"
-
-	ConfigAuthorizeCode  = "some-random-auth-code"
-	ConfigAuthorizeState = "some-random-auth-state"
-
-	ConfigAccessToken = "some-random-access-token"
-
 	SessionName = "session"
 )
 
@@ -38,8 +31,8 @@ var UserDatabase = map[string]string{
 }
 
 var oauthConfig = &oauth2.Config{
-	ClientID:     ConfigClientID,
-	ClientSecret: ConfigClientSecret,
+	ClientID:     config.ClientID,
+	ClientSecret: config.ClientSecret,
 	Scopes:       []string{"SCOPE1", "SCOPE2"},
 	Endpoint: oauth2.Endpoint{
 		AuthURL:  "http://localhost:8080/resource/oauth2/authorize",
@@ -252,7 +245,7 @@ func OAuthCodeRedirect(session *sessions.Session, w http.ResponseWriter, req *ht
 	}
 
 	values := redirectURL.Query()
-	values.Set("code", ConfigAuthorizeCode)
+	values.Set("code", config.AuthorizeCode)
 	redirectURL.RawQuery = values.Encode()
 	http.Redirect(w, req, redirectURL.String(), http.StatusFound)
 	return nil
@@ -267,7 +260,7 @@ func ResouceSecretHandler(w http.ResponseWriter, req *http.Request) error {
 	if ok && len(tokens) > 0 {
 		accessToken := strings.TrimPrefix(tokens[0], "Bearer ")
 
-		if accessToken == ConfigAccessToken {
+		if accessToken == config.AccessToken {
 			fmt.Fprintln(w, "secret")
 			return nil
 		}
@@ -283,16 +276,16 @@ func OAuthTokenHandler(w http.ResponseWriter, req *http.Request) error {
 	if !ok {
 		return ErrClientIDOrSecret
 	}
-	if clientID != ConfigClientID || clientSecret != ConfigClientSecret {
+	if clientID != config.ClientID || clientSecret != config.ClientSecret {
 		return ErrClientIDOrSecret
 	}
 
-	if code != ConfigAuthorizeCode {
+	if code != config.AuthorizeCode {
 		return ErrInvalidAuthCode
 	}
 
 	tok := oauth2.Token{
-		AccessToken: ConfigAccessToken,
+		AccessToken: config.AccessToken,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -414,7 +407,7 @@ func ClientSecretHandler(w http.ResponseWriter, req *http.Request) error {
 	}
 
 	// Redirect to /resource/oauth2/authorize
-	http.Redirect(w, req, oauthConfig.AuthCodeURL(ConfigAuthorizeState, authCodeOptions...), http.StatusFound)
+	http.Redirect(w, req, oauthConfig.AuthCodeURL(config.AuthorizeState, authCodeOptions...), http.StatusFound)
 	return nil
 }
 
