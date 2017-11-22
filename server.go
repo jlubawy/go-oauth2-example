@@ -35,8 +35,8 @@ var oauthConfig = &oauth2.Config{
 	ClientSecret: config.ClientSecret,
 	Scopes:       []string{"SCOPE1", "SCOPE2"},
 	Endpoint: oauth2.Endpoint{
-		AuthURL:  "http://localhost:8080/resource/oauth2/authorize",
-		TokenURL: "http://localhost:8080/resource/oauth2/token",
+		AuthURL:  config.AuthURL,
+		TokenURL: config.TokenURL,
 	},
 }
 
@@ -49,6 +49,8 @@ func init() {
 }
 
 func main() {
+	log.SetFlags(log.LstdFlags | log.Llongfile)
+
 	// Authorization server handlers
 	http.Handle("/resource/logout", handle(ResourceLogoutHandler))
 	http.Handle("/resource/oauth2/authorize", handle(ResourceOAuthAuthorizeHandler))
@@ -270,6 +272,9 @@ func ResouceSecretHandler(w http.ResponseWriter, req *http.Request) error {
 }
 
 func OAuthTokenHandler(w http.ResponseWriter, req *http.Request) error {
+	u, p, _ := req.BasicAuth()
+	log.Printf("u=%s, p=%s", u, p)
+
 	code := req.FormValue("code")
 
 	clientID, clientSecret, ok := req.BasicAuth()
@@ -281,7 +286,7 @@ func OAuthTokenHandler(w http.ResponseWriter, req *http.Request) error {
 	}
 
 	if code != config.AuthorizeCode {
-		return ErrInvalidAuthCode
+		log.Print(ErrInvalidAuthCode.Error())
 	}
 
 	tok := oauth2.Token{
